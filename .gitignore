@@ -1,0 +1,31 @@
+# Arquivos compilados do Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Distribuição / build
+build/
+dist/
+*.egg-info/
+
+# Testes e cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Modelo do MediaPipe (baixado automaticamente pelo main.py)
+*.task
+
+# Variáveis de ambiente
+.env
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
