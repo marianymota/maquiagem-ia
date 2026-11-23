@@ -28,11 +28,11 @@ LABIOS_INTERNO = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324,
 # Para mudar ou adicionar uma cor, é só editar este dicionário.
 # Atenção: o OpenCV usa a ordem BGR (azul, verde, vermelho), não RGB!
 CORES = {
-    "1": ("Nude rosado", (130, 130, 196)),
-    "2": ("Rosa suave", (140, 112, 214)),
+    "1": ("Nude rosado", (118, 122, 176)),
+    "2": ("Rosa suave", (124, 112, 190)),
     "3": ("Vermelho classico", (35, 20, 170)),
     "4": ("Vinho", (45, 20, 110)),
-    "5": ("Coral", (85, 100, 235)),
+    "5": ("Coral", (95, 110, 212)),
 }
 
 # Intensidade do batom: 0 = invisível, 1 = cor sólida.
@@ -42,6 +42,15 @@ OPACIDADE = 0.35
 # Tamanho do desfoque da borda (precisa ser um número ímpar).
 # Quanto maior, mais suave a transição entre o batom e a pele.
 SUAVIZAR_BORDA = 11
+
+# Ajustes especiais de algumas cores: tecla -> (opacidade, suavizar_borda).
+# Os tons claros ficam mais naturais com menos cor e borda mais suave.
+# Cores que não estão aqui usam OPACIDADE e SUAVIZAR_BORDA acima.
+AJUSTES = {
+    "1": (0.28, 15),
+    "2": (0.28, 15),
+    "5": (0.28, 15),
+}
 # ==================================================================
 
 
@@ -86,7 +95,8 @@ def pontos_dos_labios(detector, frame):
     return converter(LABIOS_EXTERNO), converter(LABIOS_INTERNO)
 
 
-def pintar_labios(frame, externo, interno, cor, opacidade=OPACIDADE):
+def pintar_labios(frame, externo, interno, cor, opacidade=OPACIDADE,
+                  suavizar=SUAVIZAR_BORDA):
     """Pinta a área dos lábios com uma cor semitransparente (o "batom").
 
     cor: cor no formato BGR do OpenCV, ex.: (0, 0, 255) = vermelho
@@ -98,7 +108,7 @@ def pintar_labios(frame, externo, interno, cor, opacidade=OPACIDADE):
     cv2.fillPoly(mascara, [interno], 0)    # "apaga" o buraco da boca
 
     # 2) Desfoca a borda da máscara, para o batom não ficar "recortado"
-    mascara = cv2.GaussianBlur(mascara, (SUAVIZAR_BORDA, SUAVIZAR_BORDA), 0)
+    mascara = cv2.GaussianBlur(mascara, (suavizar, suavizar), 0)
 
     # 3) Transforma a máscara em pesos de 0 a 1 e aplica a opacidade
     peso = (mascara.astype(np.float32) / 255.0) * opacidade
@@ -121,7 +131,8 @@ def main():
         return
 
     # Começa com a primeira cor da lista
-    nome_cor, cor = CORES["1"]
+    tecla_cor = "1"
+    nome_cor, cor = CORES[tecla_cor]
 
     while True:
         # Lê um quadro (frame) da câmera
@@ -136,7 +147,9 @@ def main():
         # Procura os lábios e, se achar um rosto, passa o batom
         externo, interno = pontos_dos_labios(detector, frame)
         if externo is not None:
-            frame = pintar_labios(frame, externo, interno, cor)
+            # Usa o ajuste especial da cor, se existir; senão, o padrão
+            opacidade, suavizar = AJUSTES.get(tecla_cor, (OPACIDADE, SUAVIZAR_BORDA))
+            frame = pintar_labios(frame, externo, interno, cor, opacidade, suavizar)
 
         # Escreve na tela a cor atual e as instruções
         cv2.putText(frame, f"Batom: {nome_cor}", (10, 30),
@@ -152,7 +165,8 @@ def main():
         if tecla == ord("q"):
             break  # "q" sai do programa
         elif chr(tecla) in CORES:
-            nome_cor, cor = CORES[chr(tecla)]  # teclas de 1 a 5 trocam a cor
+            tecla_cor = chr(tecla)
+            nome_cor, cor = CORES[tecla_cor]  # teclas de 1 a 5 trocam a cor
 
     # Libera a câmera e fecha as janelas
     camera.release()
