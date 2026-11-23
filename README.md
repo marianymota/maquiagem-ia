@@ -48,10 +48,16 @@ MediaPipe (`face_landmarker.task`, cerca de 4 MB).
 
 | Tecla | Ação              |
 |-------|-------------------|
-| `1`   | Batom vermelho    |
-| `2`   | Batom rosa        |
-| `3`   | Batom vinho       |
+| `1`   | Nude rosado       |
+| `2`   | Rosa suave        |
+| `3`   | Vermelho clássico |
+| `4`   | Vinho             |
+| `5`   | Coral             |
 | `q`   | Sair do programa  |
+
+As cores, a opacidade e a suavização da borda ficam no topo do `main.py`
+(dicionário `CORES` e constantes `OPACIDADE` e `SUAVIZAR_BORDA`), para
+facilitar a troca.
 
 > Dica: clique na janela do vídeo antes de apertar as teclas.
 
