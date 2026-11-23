@@ -21,8 +21,8 @@ Projeto de estudo feito em Python com OpenCV, MediaPipe e NumPy.
 
 ```bash
 # 1. Clone o repositório e entre na pasta
-git clone <url-do-repositorio>
-cd tryon-maquiagem
+git clone https://github.com/marianymota/maquiagem-ia.git
+cd maquiagem-ia
 
 # 2. (Recomendado) Crie e ative um ambiente virtual
 python -m venv .venv
