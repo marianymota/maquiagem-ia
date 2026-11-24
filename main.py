@@ -70,6 +70,18 @@ SOMBRAS = {
 BRILHO_SOMBRA = 0.5    # quanto a sombra escurece/clareia a pálpebra
 SHIMMER = 0.12         # força do brilho das sombras com tem_brilho=True
 
+# Efeitos dos olhos: tecla -> (nome, com_cilios)
+# (a opção "sem nada" é a bolinha com X do painel)
+EFEITOS_OLHOS = {
+    "k": ("Delineado", False),
+    "l": ("Delineado + cilios", True),
+}
+COR_DELINEADO = (20, 22, 32)   # preto amarronzado (BGR)
+OPACIDADE_DELINEADO = 0.80
+OPACIDADE_CILIOS = 0.60
+ESPESSURA_DELINEADO = 0.045    # em fração da largura do olho
+TAMANHO_GATINHO = 0.25         # quanto a ponta sai para fora do olho
+
 BRILHO_BATOM = 0.8     # usado só pelos batons 5, 6 e 7
 BRILHO_BLUSH = 0.10
 ILUMINADOR = 0.10      # força do brilho no topo da maçã do rosto
@@ -118,11 +130,11 @@ LATERAL_DIREITA = 454
 
 # ========================= PAINEL CLICÁVEL ==========================
 JANELA = "Try-on de Maquiagem"
-PAINEL_LARGURA = 270        # largura do painel ao lado do vídeo
-ABA_ALTURA = 60             # altura dos botões das abas
+PAINEL_LARGURA = 280        # largura do painel ao lado do vídeo
+ABA_ALTURA = 64             # altura dos botões das abas (ícone + nome)
 RAIO_BOLINHA = 22           # tamanho das bolinhas de cor
-COLUNAS_X = [50, 135, 220]  # posição x das 3 colunas de bolinhas
-LINHA_Y0 = 100              # posição y da primeira linha de bolinhas
+COLUNAS_X = [55, 140, 225]  # posição x das 3 colunas de bolinhas
+LINHA_Y0 = 104              # posição y da primeira linha de bolinhas
 ESPACO_Y = 65               # distância entre as linhas
 
 COR_FUNDO = (45, 40, 40)
@@ -459,17 +471,115 @@ def pintar_sombra(frame, pontos, cor, opacidade, tem_brilho):
     return frame
 
 
+def passar_olhos(frame, pontos, com_cilios):
+    """Delineado (e cílios), calculado só na região dos olhos."""
+    largura_rosto = np.linalg.norm(pontos[LATERAL_DIREITA] - pontos[LATERAL_ESQUERDA])
+    indices = []
+    for olho in OLHOS:
+        indices += olho["olho"] + olho["sobrancelha"]
+    return no_recorte(frame, pontos, indices, largura_rosto * 0.12,
+                      pintar_olhos, com_cilios)
+
+
+def curva(p0, p1, p2, partes=6):
+    """Pontos de uma curva suave que sai de p0, é puxada por p1 e termina em p2."""
+    t = np.linspace(0, 1, partes)[:, None]
+    return ((1 - t) ** 2 * p0 + 2 * (1 - t) * t * p1 + t ** 2 * p2).astype(np.int32)
+
+
+def pintar_olhos(frame, pontos, com_cilios):
+    """Desenha delineado gatinho e, se pedido, fios de cílios."""
+    formato = frame.shape[:2]
+    delineado = np.zeros(formato, dtype=np.uint8)
+    cilios = np.zeros(formato, dtype=np.uint8)
+
+    for olho in OLHOS:
+        # Pálpebra de cima, do canto de FORA para o de DENTRO
+        palpebra = pontos[olho["palpebra"]]
+        canto_fora, canto_dentro = palpebra[0], palpebra[-1]
+        largura = np.linalg.norm(canto_fora - canto_dentro)
+
+        # Direções do olho (acompanham a cabeça e a pálpebra):
+        # "para_fora" vai do canto de dentro ao de fora; "para_cima" vai à sobrancelha
+        para_fora = (canto_fora - canto_dentro) / largura
+        para_cima = pontos[olho["meio_sobrancelha"]] - pontos[olho["topo_olho"]]
+        para_cima = para_cima / np.linalg.norm(para_cima)
+
+        # A linha fica um pouquinho acima dos cílios, em cima da pálpebra
+        linha = palpebra + para_cima * largura * 0.02
+        espessura_max = largura * ESPESSURA_DELINEADO
+
+        # 1) Delineado: fino no canto de dentro e mais grosso no de fora
+        n = len(linha)
+        for i in range(n - 1):
+            perto_de_fora = 1 - i / (n - 1)  # 1 no canto de fora, 0 no de dentro
+            esp = max(1, int(round(espessura_max * (0.4 + 0.6 * perto_de_fora))))
+            cv2.line(delineado, tuple(linha[i].astype(int)), tuple(linha[i + 1].astype(int)),
+                     255, esp, cv2.LINE_AA)
+
+        # 2) Ponta "gatinho": um triângulo saindo do canto, para fora e um pouco para cima
+        ponta = canto_fora + para_fora * largura * TAMANHO_GATINHO + para_cima * largura * 0.12
+        triangulo = np.array([linha[0] - para_cima * espessura_max * 0.3,
+                              ponta,
+                              linha[1] + para_cima * espessura_max], dtype=np.int32)
+        cv2.fillPoly(delineado, [triangulo], 255, cv2.LINE_AA)
+
+        if com_cilios:
+            # 3) Linha dos cílios bem fina e escura, colada no olho
+            cv2.polylines(cilios, [palpebra.astype(np.int32)], False, 255, 1, cv2.LINE_AA)
+
+            # 4) Fios curvos saindo da pálpebra, maiores e mais inclinados
+            #    para fora perto do canto de fora (como máscara de cílios)
+            de_dentro_para_fora = palpebra[::-1]
+            for t in np.linspace(0.1, 1.0, 14):
+                # Ponto da pálpebra na posição t (0 = canto de dentro, 1 = de fora)
+                pos = t * (n - 1)
+                i = min(int(pos), n - 2)
+                base = de_dentro_para_fora[i] + (de_dentro_para_fora[i + 1] - de_dentro_para_fora[i]) * (pos - i)
+
+                comprimento = largura * (0.10 + 0.08 * t)
+                direcao = para_cima + para_fora * (0.2 + 0.9 * t)
+                direcao = direcao / np.linalg.norm(direcao)
+                meio = base + direcao * comprimento * 0.6
+                fim = base + direcao * comprimento + para_fora * comprimento * 0.3  # curvatura
+                cv2.polylines(cilios, [curva(base, meio, fim)], False, 255, 1, cv2.LINE_AA)
+
+    # 5) Suaviza a borda do delineado e junta tudo numa máscara de 0 a 1
+    delineado = cv2.GaussianBlur(delineado, (3, 3), 0)
+    peso = (delineado / 255.0) * OPACIDADE_DELINEADO + (cilios / 255.0) * OPACIDADE_CILIOS
+    peso = np.clip(peso, 0, 1).astype(np.float32)
+
+    # 6) Escurece no LAB: a cor e o brilho vão para o preto do delineado,
+    #    mas todos os pixels mudam juntos, então a textura continua por baixo
+    return aplicar_cor(frame, peso, COR_DELINEADO, brilho=1.0)
+
+
 # ------------------------------ PAINEL -----------------------------
 
-# Cada aba do painel e o dicionário de cores dela (na ordem das abas)
-CATEGORIAS = {"batom": BATONS, "blush": BLUSHES, "sombra": SOMBRAS}
+# Cada aba do painel e o dicionário de opções dela (na ordem das abas)
+CATEGORIAS = {"batom": BATONS, "blush": BLUSHES, "sombra": SOMBRAS,
+              "olhos": EFEITOS_OLHOS}
 ABAS = list(CATEGORIAS)
 LARGURA_ABA = PAINEL_LARGURA // len(ABAS)
 
 
 def itens_da_aba(aba):
-    """Lista as teclas das cores da aba, mais None (a bolinha "sem cor")."""
+    """Lista as teclas das opções da aba, mais None (a bolinha "sem cor").
+
+    Na aba "Olhos" o "sem nada" vem primeiro: sem nada, delineado, + cílios.
+    """
+    if aba == "olhos":
+        return [None] + list(EFEITOS_OLHOS)
     return list(CATEGORIAS[aba]) + [None]
+
+
+def cor_do_icone(aba, tecla):
+    """Cor usada no ícone da aba: a cor escolhida, ou cinza se estiver vazia."""
+    if tecla is None:
+        return CINZA
+    if aba == "olhos":
+        return (30, 30, 30)  # delineado ligado: ícone com traço escuro
+    return CATEGORIAS[aba][tecla][1]
 
 
 def posicao_bolinha(i):
@@ -501,10 +611,31 @@ def desenhar_icone_sombra(img, cx, cy, cor):
     cv2.ellipse(img, (cx, cy + 4), (13, 6), 0, 0, 360, (30, 30, 30), 1, cv2.LINE_AA)  # contorno
 
 
+def desenhar_olho_delineado(img, cx, cy, cor, com_cilios=True, escala=1.0):
+    """Desenha um olho com delineado gatinho (e cílios, se pedido)."""
+    s = escala
+    cv2.ellipse(img, (cx, cy), (int(13 * s), int(6 * s)), 0, 0, 360, (235, 235, 235), -1)  # olho
+    cv2.circle(img, (cx, cy), int(4 * s), (70, 45, 30), -1)                                # íris
+    # Delineado: arco de cima do olho + ponta para fora e para cima
+    cv2.ellipse(img, (cx, cy), (int(13 * s), int(6 * s)), 0, 180, 360, cor, max(1, int(2 * s)), cv2.LINE_AA)
+    cv2.line(img, (cx + int(12 * s), cy - int(1 * s)), (cx + int(18 * s), cy - int(5 * s)),
+             cor, max(1, int(2 * s)), cv2.LINE_AA)
+    if com_cilios:
+        # Três fiozinhos de cílios saindo da pálpebra
+        for dx in (-6, 0, 6):
+            x0, y0 = cx + int(dx * s), cy - int(6 * s)
+            cv2.line(img, (x0, y0), (x0 + int(2 * s), y0 - int(5 * s)), cor, 1, cv2.LINE_AA)
+
+
+def desenhar_icone_olhos(img, cx, cy, cor):
+    """Ícone da aba "Olhos": olho com delineado e cílios."""
+    desenhar_olho_delineado(img, cx - 2, cy + 4, cor)
+
+
 # Ícone e nome mostrados em cada aba
 ICONES = {"batom": desenhar_icone_batom, "blush": desenhar_icone_pincel,
-          "sombra": desenhar_icone_sombra}
-TITULOS = {"batom": "Batom", "blush": "Blush", "sombra": "Sombra"}
+          "sombra": desenhar_icone_sombra, "olhos": desenhar_icone_olhos}
+TITULOS = {"batom": "Batom", "blush": "Blush", "sombra": "Sombra", "olhos": "Olhos"}
 
 
 def escrever(img, texto, posicao, tamanho=0.45, cor=BRANCO):
@@ -517,16 +648,17 @@ def desenhar_painel(altura, estado):
     """Monta a imagem do painel lateral com abas e bolinhas de cor."""
     painel = np.full((altura, PAINEL_LARGURA, 3), COR_FUNDO, dtype=np.uint8)
 
-    # --- Abas (Batom | Blush | Sombra), cada uma com seu ícone ---
+    # --- Abas (Batom | Blush | Sombra | Olhos): ícone em cima, nome embaixo ---
     for i, aba in enumerate(ABAS):
         x0 = i * LARGURA_ABA
+        meio = x0 + LARGURA_ABA // 2
         fundo = COR_ABA_ATIVA if estado["aba"] == aba else COR_ABA_INATIVA
         cv2.rectangle(painel, (x0, 0), (x0 + LARGURA_ABA - 1, ABA_ALTURA), fundo, -1)
-        # O ícone fica da cor escolhida (ou cinza, se estiver "sem cor")
-        tecla = estado[aba]
-        cor_icone = CATEGORIAS[aba][tecla][1] if tecla else CINZA
-        ICONES[aba](painel, x0 + 18, 30, cor_icone)
-        escrever(painel, TITULOS[aba], (x0 + 36, 36), 0.42)
+        # O ícone fica da cor escolhida (ou cinza, se estiver vazio)
+        ICONES[aba](painel, meio, 24, cor_do_icone(aba, estado[aba]))
+        # Nome centralizado embaixo do ícone
+        (largura_texto, _), _ = cv2.getTextSize(TITULOS[aba], cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+        escrever(painel, TITULOS[aba], (meio - largura_texto // 2, 58), 0.4)
         # Linha clara embaixo da aba ativa
         if estado["aba"] == aba:
             cv2.line(painel, (x0, ABA_ALTURA), (x0 + LARGURA_ABA - 1, ABA_ALTURA), BRANCO, 2)
@@ -543,6 +675,12 @@ def desenhar_painel(altura, estado):
             cx, cy = centro
             cv2.line(painel, (cx - d, cy - d), (cx + d, cy + d), BRANCO, 2, cv2.LINE_AA)
             cv2.line(painel, (cx - d, cy + d), (cx + d, cy - d), BRANCO, 2, cv2.LINE_AA)
+        elif estado["aba"] == "olhos":
+            # Bolinha clara com um desenho do efeito (delineado ou + cílios)
+            cv2.circle(painel, centro, RAIO_BOLINHA, (200, 200, 200), -1, cv2.LINE_AA)
+            desenhar_olho_delineado(painel, centro[0] - 2, centro[1] + 2, (20, 20, 20),
+                                    com_cilios=cores[tecla][1], escala=1.1)
+            escrever(painel, tecla, (centro[0] - 4, centro[1] + RAIO_BOLINHA + 12), 0.35, CINZA)
         else:
             cv2.circle(painel, centro, RAIO_BOLINHA, cores[tecla][1], -1, cv2.LINE_AA)
             # Tecla de atalho, pequena, embaixo da bolinha
@@ -555,14 +693,21 @@ def desenhar_painel(altura, estado):
     y = LINHA_Y0 + 3 * ESPACO_Y
     for i, aba in enumerate(ABAS):
         tecla = estado[aba]
-        nome = CATEGORIAS[aba][tecla][0] if tecla else "sem cor"
+        vazio = "sem nada" if aba == "olhos" else "sem cor"
+        nome = CATEGORIAS[aba][tecla][0] if tecla else vazio
         escrever(painel, f"{TITULOS[aba]}: {nome}", (10, y + i * 22))
 
     # --- Atalhos de teclado ---
-    escrever(painel, "Atalhos: 1-8 batom, 0 tira", (10, altura - 64), 0.38, CINZA)
-    escrever(painel, "a s d f g h blush, b liga/desl.", (10, altura - 46), 0.38, CINZA)
-    escrever(painel, "z x c v n m j sombra, o liga/desl.", (10, altura - 28), 0.38, CINZA)
-    escrever(painel, "q: sair", (10, altura - 10), 0.38, CINZA)
+    atalhos = [
+        "Atalhos: 1-8 batom, 0 tira",
+        "a s d f g h blush, b liga/desl.",
+        "z x c v n m j sombra, o liga/desl.",
+        "k delineado, l +cilios, i liga/desl.",
+        "q: sair",
+    ]
+    for i, texto in enumerate(atalhos):
+        y = altura - 10 - (len(atalhos) - 1 - i) * 18  # de baixo para cima
+        escrever(painel, texto, (10, y), 0.38, CINZA)
     return painel
 
 
@@ -597,6 +742,8 @@ def escolher(estado, aba, tecla):
         estado["ultimo_blush"] = tecla   # lembrado pela tecla "b"
     if aba == "sombra" and tecla is not None:
         estado["ultima_sombra"] = tecla  # lembrado pela tecla "o"
+    if aba == "olhos" and tecla is not None:
+        estado["ultimo_olhos"] = tecla   # lembrado pela tecla "i"
 
 
 def tratar_tecla(estado, tecla):
@@ -623,6 +770,13 @@ def tratar_tecla(estado, tecla):
         novo = None if estado["sombra"] else estado["ultima_sombra"]
         escolher(estado, "sombra", novo)
         estado["aba"] = "sombra"
+    elif tecla in EFEITOS_OLHOS:           # k: delineado, l: delineado + cílios
+        escolher(estado, "olhos", tecla)
+        estado["aba"] = "olhos"
+    elif tecla == "i":                     # i: liga/desliga o delineado
+        novo = None if estado["olhos"] else estado["ultimo_olhos"]
+        escolher(estado, "olhos", novo)
+        estado["aba"] = "olhos"
     return True
 
 
@@ -646,6 +800,8 @@ def main():
         "ultimo_blush": "a",    # para a tecla "b" religar o mesmo blush
         "sombra": "z",          # tecla da sombra escolhida (None = sem sombra)
         "ultima_sombra": "z",   # para a tecla "o" religar a mesma sombra
+        "olhos": None,          # efeito dos olhos (None = sem nada)
+        "ultimo_olhos": "k",    # para a tecla "i" religar o mesmo efeito
         "largura_video": 0,     # usado para saber onde o painel começa
     }
 
@@ -670,6 +826,9 @@ def main():
             if estado["sombra"]:
                 _, cor, opacidade, tem_brilho = SOMBRAS[estado["sombra"]]
                 frame = passar_sombra(frame, pontos, cor, opacidade, tem_brilho)
+            if estado["olhos"]:
+                _, com_cilios = EFEITOS_OLHOS[estado["olhos"]]
+                frame = passar_olhos(frame, pontos, com_cilios)
             if estado["blush"]:
                 _, cor, opacidade = BLUSHES[estado["blush"]]
                 frame = passar_blush(frame, pontos, cor, opacidade)

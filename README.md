@@ -1,6 +1,7 @@
 # Try-on Virtual de Maquiagem 💄
 
-Experimente batom, blush e sombra virtualmente usando a webcam! O programa
+Experimente batom, blush, sombra, delineado e cílios virtualmente usando a
+webcam! O programa
 detecta seu rosto em tempo real com o **MediaPipe Face Mesh**, encontra os
 lábios, as maçãs do rosto e as pálpebras e aplica a maquiagem de forma
 realista, acompanhando os movimentos da cabeça. Dá para combinar livremente
@@ -21,7 +22,11 @@ Projeto de estudo feito em Python com OpenCV, MediaPipe e NumPy.
      O blush acompanha o tamanho e a inclinação do rosto;
    - **sombra:** a pálpebra, entre a linha dos cílios e a sobrancelha,
      sem a parte aberta do olho. Como é refeita a cada quadro, acompanha
-     a pálpebra quando a pessoa pisca.
+     a pálpebra quando a pessoa pisca;
+   - **delineado:** uma linha ao longo da pálpebra de cima, fina no canto
+     de dentro e mais grossa no de fora, terminando numa ponta "gatinho";
+   - **cílios:** a linha dos cílios escurecida e fios finos e curvos
+     saindo da pálpebra, maiores e mais inclinados no canto de fora.
 4. As máscaras são **desfocadas** (GaussianBlur), para não ter borda marcada.
 5. A cor é misturada no **espaço de cor LAB**: os canais de cor (A e B)
    se aproximam da cor da maquiagem, e o brilho (canal L) é mantido, então
@@ -72,11 +77,12 @@ MediaPipe (`face_landmarker.task`, cerca de 4 MB).
 
 ### Controles
 
-Batom, blush e sombra são independentes: escolha um de cada e combine.
+Batom, blush, sombra e olhos são independentes: escolha um de cada e combine.
 
 **Com o mouse:** no painel ao lado do vídeo, clique na aba **Batom**,
-**Blush** ou **Sombra** e depois na bolinha da cor. A cor escolhida fica
-com contorno branco. A bolinha com **X** tira a maquiagem daquela aba.
+**Blush**, **Sombra** ou **Olhos** e depois na bolinha. A opção escolhida
+fica com contorno branco. A bolinha com **X** tira a maquiagem daquela aba.
+Na aba **Olhos** as opções são: sem nada (X), delineado e delineado + cílios.
 
 **Com o teclado (atalhos):**
 
@@ -113,11 +119,17 @@ com contorno branco. A bolinha com **X** tira a maquiagem daquela aba.
 | `j`   | Ameixa                 |
 | `o`   | Liga/desliga sombra    |
 
+| Tecla | Olhos                       |
+|-------|-----------------------------|
+| `k`   | Delineado                   |
+| `l`   | Delineado + cílios          |
+| `i`   | Liga/desliga o efeito       |
+
 | Tecla | Ação               |
 |-------|--------------------|
 | `q`   | Sair do programa   |
 
-A combinação atual (batom + blush + sombra) aparece escrita no painel.
+A combinação atual (batom + blush + sombra + olhos) aparece escrita no painel.
 
 As cores ficam nos dicionários `BATONS`, `BLUSHES` e `SOMBRAS` no topo do
 `main.py`, no formato `tecla: (nome, cor BGR, opacidade)` (a sombra tem um
@@ -130,8 +142,9 @@ quarto valor, `True` para as cores com brilho), para facilitar a troca.
 - [x] Mais cores de batom e blush, com combinação livre
 - [x] Painel clicável para escolher as cores com o mouse
 - [x] Sombra nos olhos, com aba própria no painel
+- [x] Delineado gatinho e efeito de cílios (aba Olhos)
 - [ ] Controle de intensidade da maquiagem pelo teclado
-- [ ] Aplicar outras maquiagens: delineado, rímel e iluminador separado
+- [ ] Aplicar outras maquiagens: lápis na linha d'água e iluminador separado
 - [ ] Botão para tirar uma foto (salvar a imagem com a maquiagem)
 - [ ] Suavizar o movimento dos pontos para o batom tremer menos
 - [ ] Suportar mais de um rosto ao mesmo tempo
