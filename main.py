@@ -55,6 +55,21 @@ BLUSHES = {
 # Quanto a maquiagem pode escurecer/clarear a pele (0 = só muda a cor,
 # 1 = brilho igual ao da cor). Todos os pixels mudam igual, então a
 # textura continua. Ajuda tons escuros (vinho, chocolate) a aparecerem.
+# Sombras: tecla -> (nome, cor BGR, opacidade, tem_brilho)
+# A opacidade é a do ponto mais forte (perto dos cílios); ela vai
+# diminuindo até sumir perto da sobrancelha.
+SOMBRAS = {
+    "z": ("Rose", (140, 120, 210), 0.55, False),
+    "x": ("Pessego", (110, 155, 240), 0.55, False),
+    "c": ("Bronze/cobre", (45, 90, 175), 0.55, False),
+    "v": ("Marrom suave", (65, 85, 125), 0.55, False),
+    "n": ("Malva", (155, 100, 165), 0.55, False),
+    "m": ("Champanhe (brilho)", (160, 200, 230), 0.50, True),
+    "j": ("Ameixa", (80, 35, 105), 0.55, False),
+}
+BRILHO_SOMBRA = 0.5    # quanto a sombra escurece/clareia a pálpebra
+SHIMMER = 0.12         # força do brilho das sombras com tem_brilho=True
+
 BRILHO_BATOM = 0.8     # usado só pelos batons 5, 6 e 7
 BRILHO_BLUSH = 0.10
 ILUMINADOR = 0.10      # força do brilho no topo da maçã do rosto
@@ -80,15 +95,33 @@ BLUSH_LADOS = [
 # Camadas do blush: (tamanho, peso). Cada camada é um oval desfocado;
 # somadas, ficam fortes no centro e somem devagar nas pontas.
 CAMADAS_BLUSH = [(1.0, 0.35), (0.7, 0.35), (0.4, 0.30)]
+# Pontos usados para a sombra, um grupo para cada olho:
+# - "olho": contorno da parte aberta do olho, em ordem (não pode ser pintada)
+# - "palpebra": linha dos cílios de cima, do canto de fora ao de dentro
+# - "sobrancelha": parte de baixo da sobrancelha, de dentro para fora
+# - "topo_olho" e "meio_sobrancelha": para medir a altura da pálpebra
+OLHOS = [
+    {"olho": [33, 246, 161, 160, 159, 158, 157, 173, 133,
+              155, 154, 153, 145, 144, 163, 7],
+     "palpebra": [33, 246, 161, 160, 159, 158, 157, 173, 133],
+     "sobrancelha": [55, 65, 52, 53, 46],
+     "topo_olho": 159, "meio_sobrancelha": 52},
+    {"olho": [263, 466, 388, 387, 386, 385, 384, 398, 362,
+              382, 381, 380, 374, 373, 390, 249],
+     "palpebra": [263, 466, 388, 387, 386, 385, 384, 398, 362],
+     "sobrancelha": [285, 295, 282, 283, 276],
+     "topo_olho": 386, "meio_sobrancelha": 282},
+]
+
 LATERAL_ESQUERDA = 234  # bordas do rosto, para medir a largura
 LATERAL_DIREITA = 454
 
 # ========================= PAINEL CLICÁVEL ==========================
 JANELA = "Try-on de Maquiagem"
-PAINEL_LARGURA = 240        # largura do painel ao lado do vídeo
+PAINEL_LARGURA = 270        # largura do painel ao lado do vídeo
 ABA_ALTURA = 60             # altura dos botões das abas
 RAIO_BOLINHA = 22           # tamanho das bolinhas de cor
-COLUNAS_X = [45, 120, 195]  # posição x das 3 colunas de bolinhas
+COLUNAS_X = [50, 135, 220]  # posição x das 3 colunas de bolinhas
 LINHA_Y0 = 100              # posição y da primeira linha de bolinhas
 ESPACO_Y = 65               # distância entre as linhas
 
@@ -367,12 +400,76 @@ def pintar_blush(frame, pontos, cor, opacidade):
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
+def passar_sombra(frame, pontos, cor, opacidade, tem_brilho):
+    """Sombra nos olhos, calculada só na região dos olhos (mais rápido)."""
+    largura_rosto = np.linalg.norm(pontos[LATERAL_DIREITA] - pontos[LATERAL_ESQUERDA])
+    indices = []
+    for olho in OLHOS:
+        indices += olho["olho"] + olho["sobrancelha"]
+    return no_recorte(frame, pontos, indices, largura_rosto * 0.12,
+                      pintar_sombra, cor, opacidade, tem_brilho)
+
+
+def pintar_sombra(frame, pontos, cor, opacidade, tem_brilho):
+    """Sombra com degradê: forte nos cílios, sumindo até a sobrancelha."""
+    formato = frame.shape[:2]
+    mascara = np.zeros(formato, dtype=np.float32)
+    olhos_abertos = np.zeros(formato, dtype=np.uint8)
+
+    for olho in OLHOS:
+        # 1) Região da pálpebra: entre a linha dos cílios e a sobrancelha.
+        #    Como vem dos pontos a cada quadro, acompanha a pálpebra ao piscar.
+        poligono = pontos[olho["palpebra"] + olho["sobrancelha"]].astype(np.int32)
+        regiao = np.zeros(formato, dtype=np.uint8)
+        cv2.fillPoly(regiao, [poligono], 255)
+
+        # 2) Parte aberta do olho (vai ser protegida, sem tinta)
+        aberto = np.zeros(formato, dtype=np.uint8)
+        cv2.fillPoly(aberto, [pontos[olho["olho"]].astype(np.int32)], 255)
+        olhos_abertos = np.maximum(olhos_abertos, aberto)
+
+        # 3) Distância de cada pixel até o olho: 0 nos cílios e cresce para cima
+        distancia = cv2.distanceTransform(255 - aberto, cv2.DIST_L2, 5)
+        altura = np.linalg.norm(pontos[olho["meio_sobrancelha"]] - pontos[olho["topo_olho"]])
+
+        # 4) Duas camadas somadas (pigmento acumulado):
+        #    uma curta e forte perto dos cílios + uma longa e suave até a sobrancelha
+        curta = np.clip(1 - distancia / (altura * 0.7), 0, 1)
+        longa = np.clip(1 - distancia / (altura * 1.3), 0, 1)
+        mascara += (regiao / 255.0) * (0.5 * curta + 0.5 * longa)
+
+    # 5) Desfoque para não ter nenhuma borda visível
+    altura_media = np.mean([np.linalg.norm(pontos[o["meio_sobrancelha"]] - pontos[o["topo_olho"]])
+                            for o in OLHOS])
+    k = impar(altura_media * 0.5)
+    mascara = cv2.GaussianBlur(mascara, (k, k), 0)
+
+    # 6) Não pinta o olho em si: zera a máscara na parte aberta do olho
+    olhos_abertos = cv2.GaussianBlur(olhos_abertos, (3, 3), 0).astype(np.float32) / 255.0
+    mascara = np.clip(mascara, 0, 1) * (1 - olhos_abertos)
+
+    # 7) Mistura a cor no LAB (textura da pele continua por baixo)
+    frame = aplicar_cor(frame, mascara * opacidade, cor, brilho=BRILHO_SOMBRA)
+
+    # 8) Sombras com brilho (champanhe): um reflexo de luz bem leve
+    if tem_brilho:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab[:, :, 0] = clarear(lab[:, :, 0], mascara, SHIMMER)
+        frame = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+    return frame
+
+
 # ------------------------------ PAINEL -----------------------------
+
+# Cada aba do painel e o dicionário de cores dela (na ordem das abas)
+CATEGORIAS = {"batom": BATONS, "blush": BLUSHES, "sombra": SOMBRAS}
+ABAS = list(CATEGORIAS)
+LARGURA_ABA = PAINEL_LARGURA // len(ABAS)
+
 
 def itens_da_aba(aba):
     """Lista as teclas das cores da aba, mais None (a bolinha "sem cor")."""
-    cores = BATONS if aba == "batom" else BLUSHES
-    return list(cores) + [None]
+    return list(CATEGORIAS[aba]) + [None]
 
 
 def posicao_bolinha(i):
@@ -396,6 +493,20 @@ def desenhar_icone_pincel(img, cx, cy, cor):
     cv2.ellipse(img, (cx, cy - 11), (9, 10), 0, 0, 360, cor, -1)               # cerdas
 
 
+def desenhar_icone_sombra(img, cx, cy, cor):
+    """Desenha um olho com a pálpebra pintada da cor da sombra."""
+    cv2.ellipse(img, (cx, cy + 2), (14, 13), 0, 180, 360, cor, -1)              # sombra
+    cv2.ellipse(img, (cx, cy + 4), (13, 6), 0, 0, 360, (235, 235, 235), -1)     # olho
+    cv2.circle(img, (cx, cy + 4), 4, (70, 45, 30), -1)                           # íris
+    cv2.ellipse(img, (cx, cy + 4), (13, 6), 0, 0, 360, (30, 30, 30), 1, cv2.LINE_AA)  # contorno
+
+
+# Ícone e nome mostrados em cada aba
+ICONES = {"batom": desenhar_icone_batom, "blush": desenhar_icone_pincel,
+          "sombra": desenhar_icone_sombra}
+TITULOS = {"batom": "Batom", "blush": "Blush", "sombra": "Sombra"}
+
+
 def escrever(img, texto, posicao, tamanho=0.45, cor=BRANCO):
     """Escreve um texto pequeno no painel."""
     cv2.putText(img, texto, posicao, cv2.FONT_HERSHEY_SIMPLEX, tamanho,
@@ -405,26 +516,23 @@ def escrever(img, texto, posicao, tamanho=0.45, cor=BRANCO):
 def desenhar_painel(altura, estado):
     """Monta a imagem do painel lateral com abas e bolinhas de cor."""
     painel = np.full((altura, PAINEL_LARGURA, 3), COR_FUNDO, dtype=np.uint8)
-    meio = PAINEL_LARGURA // 2
 
-    # --- Abas (Batom | Blush) ---
-    cor_batom = BATONS[estado["batom"]][1] if estado["batom"] else CINZA
-    cor_blush = BLUSHES[estado["blush"]][1] if estado["blush"] else CINZA
-    for aba, x0 in (("batom", 0), ("blush", meio)):
+    # --- Abas (Batom | Blush | Sombra), cada uma com seu ícone ---
+    for i, aba in enumerate(ABAS):
+        x0 = i * LARGURA_ABA
         fundo = COR_ABA_ATIVA if estado["aba"] == aba else COR_ABA_INATIVA
-        cv2.rectangle(painel, (x0, 0), (x0 + meio - 1, ABA_ALTURA), fundo, -1)
-        if aba == "batom":
-            desenhar_icone_batom(painel, x0 + 22, 30, cor_batom)
-            escrever(painel, "Batom", (x0 + 40, 36))
-        else:
-            desenhar_icone_pincel(painel, x0 + 22, 30, cor_blush)
-            escrever(painel, "Blush", (x0 + 40, 36))
-    # Linha clara embaixo da aba ativa
-    x0 = 0 if estado["aba"] == "batom" else meio
-    cv2.line(painel, (x0, ABA_ALTURA), (x0 + meio - 1, ABA_ALTURA), BRANCO, 2)
+        cv2.rectangle(painel, (x0, 0), (x0 + LARGURA_ABA - 1, ABA_ALTURA), fundo, -1)
+        # O ícone fica da cor escolhida (ou cinza, se estiver "sem cor")
+        tecla = estado[aba]
+        cor_icone = CATEGORIAS[aba][tecla][1] if tecla else CINZA
+        ICONES[aba](painel, x0 + 18, 30, cor_icone)
+        escrever(painel, TITULOS[aba], (x0 + 36, 36), 0.42)
+        # Linha clara embaixo da aba ativa
+        if estado["aba"] == aba:
+            cv2.line(painel, (x0, ABA_ALTURA), (x0 + LARGURA_ABA - 1, ABA_ALTURA), BRANCO, 2)
 
     # --- Bolinhas de cor da aba ativa ---
-    cores = BATONS if estado["aba"] == "batom" else BLUSHES
+    cores = CATEGORIAS[estado["aba"]]
     escolhida = estado[estado["aba"]]  # tecla da cor escolhida nessa aba
     for i, tecla in enumerate(itens_da_aba(estado["aba"])):
         centro = posicao_bolinha(i)
@@ -444,15 +552,16 @@ def desenhar_painel(altura, estado):
             cv2.circle(painel, centro, RAIO_BOLINHA + 4, BRANCO, 2, cv2.LINE_AA)
 
     # --- Nome das cores escolhidas ---
-    nome_batom = BATONS[estado["batom"]][0] if estado["batom"] else "sem batom"
-    nome_blush = BLUSHES[estado["blush"]][0] if estado["blush"] else "sem blush"
     y = LINHA_Y0 + 3 * ESPACO_Y
-    escrever(painel, f"Batom: {nome_batom}", (10, y))
-    escrever(painel, f"Blush: {nome_blush}", (10, y + 22))
+    for i, aba in enumerate(ABAS):
+        tecla = estado[aba]
+        nome = CATEGORIAS[aba][tecla][0] if tecla else "sem cor"
+        escrever(painel, f"{TITULOS[aba]}: {nome}", (10, y + i * 22))
 
     # --- Atalhos de teclado ---
-    escrever(painel, "Atalhos: 1-8 batom, 0 tira", (10, altura - 46), 0.38, CINZA)
-    escrever(painel, "a s d f g h blush, b liga/desl.", (10, altura - 28), 0.38, CINZA)
+    escrever(painel, "Atalhos: 1-8 batom, 0 tira", (10, altura - 64), 0.38, CINZA)
+    escrever(painel, "a s d f g h blush, b liga/desl.", (10, altura - 46), 0.38, CINZA)
+    escrever(painel, "z x c v n m j sombra, o liga/desl.", (10, altura - 28), 0.38, CINZA)
     escrever(painel, "q: sair", (10, altura - 10), 0.38, CINZA)
     return painel
 
@@ -469,7 +578,8 @@ def ao_clicar(evento, x, y, flags, estado):
 
     # Clique nas abas
     if y <= ABA_ALTURA:
-        estado["aba"] = "batom" if x < PAINEL_LARGURA // 2 else "blush"
+        indice = min(x // LARGURA_ABA, len(ABAS) - 1)  # qual aba foi clicada
+        estado["aba"] = ABAS[indice]
         return
 
     # Clique numa bolinha: confere se o clique está dentro do círculo
@@ -484,7 +594,9 @@ def escolher(estado, aba, tecla):
     """Aplica a cor escolhida (tecla) ou tira a maquiagem (None)."""
     estado[aba] = tecla
     if aba == "blush" and tecla is not None:
-        estado["ultimo_blush"] = tecla  # lembrado pela tecla "b"
+        estado["ultimo_blush"] = tecla   # lembrado pela tecla "b"
+    if aba == "sombra" and tecla is not None:
+        estado["ultima_sombra"] = tecla  # lembrado pela tecla "o"
 
 
 def tratar_tecla(estado, tecla):
@@ -504,6 +616,13 @@ def tratar_tecla(estado, tecla):
         novo = None if estado["blush"] else estado["ultimo_blush"]
         escolher(estado, "blush", novo)
         estado["aba"] = "blush"
+    elif tecla in SOMBRAS:                 # z, x, c, v, n, m, j: troca a sombra
+        escolher(estado, "sombra", tecla)
+        estado["aba"] = "sombra"
+    elif tecla == "o":                     # o: liga/desliga a sombra
+        novo = None if estado["sombra"] else estado["ultima_sombra"]
+        escolher(estado, "sombra", novo)
+        estado["aba"] = "sombra"
     return True
 
 
@@ -525,6 +644,8 @@ def main():
         "batom": "1",           # tecla do batom escolhido (None = sem batom)
         "blush": "a",           # tecla do blush escolhido (None = sem blush)
         "ultimo_blush": "a",    # para a tecla "b" religar o mesmo blush
+        "sombra": "z",          # tecla da sombra escolhida (None = sem sombra)
+        "ultima_sombra": "z",   # para a tecla "o" religar a mesma sombra
         "largura_video": 0,     # usado para saber onde o painel começa
     }
 
@@ -546,6 +667,9 @@ def main():
         # Procura o rosto e aplica a maquiagem escolhida
         pontos = detectar_rosto(detector, frame)
         if pontos is not None:
+            if estado["sombra"]:
+                _, cor, opacidade, tem_brilho = SOMBRAS[estado["sombra"]]
+                frame = passar_sombra(frame, pontos, cor, opacidade, tem_brilho)
             if estado["blush"]:
                 _, cor, opacidade = BLUSHES[estado["blush"]]
                 frame = passar_blush(frame, pontos, cor, opacidade)
