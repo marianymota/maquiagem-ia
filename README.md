@@ -15,15 +15,24 @@ Projeto de estudo feito em Python com OpenCV, MediaPipe e NumPy.
    contorno dos lábios e os pontos das maçãs do rosto.
 3. Com esses pontos criamos **máscaras**:
    - **batom:** a área dos lábios, sem o "buraco" da boca;
-   - **blush:** dois ovais no alto das maçãs do rosto, alongados na
-     diagonal em direção às têmporas, que acompanham o tamanho e a
-     inclinação do rosto.
+   - **blush:** várias camadas de ovais desfocados, somadas, na maçã do
+     rosto, começando embaixo do olho e subindo na diagonal até a têmpora.
+     O blush acompanha o tamanho e a inclinação do rosto.
 4. As máscaras são **desfocadas** (GaussianBlur), para não ter borda marcada.
 5. A cor é misturada no **espaço de cor LAB**: os canais de cor (A e B)
-   se aproximam da cor da maquiagem, e o brilho (canal L) muda só um pouco
-   e por igual, então a luz e a textura da pele continuam. Assim a pele
-   não fica "chapada".
-6. Um **painel** desenhado com o OpenCV fica ao lado do vídeo, e o
+   se aproximam da cor da maquiagem, e o brilho (canal L) é mantido, então
+   a luz e a textura da pele continuam. Assim a pele não fica "chapada".
+6. Toques de realismo:
+   - **batom:** cor menos saturada, degradê (bordas um pouco mais escuras,
+     centro mais claro) e um **gloss** sutil no meio dos lábios;
+   - **blush:** pigmento forte no centro que some aos poucos, e um
+     **iluminador** leve no topo da maçã do rosto.
+
+   Os batons cereja escuro, vinho/berry e marrom-chocolate usam o efeito
+   original (cor por igual, sem gloss).
+7. Para ficar rápido, a maquiagem é calculada só num recorte em volta da
+   boca e das bochechas, e os desfoques grandes são feitos numa imagem menor.
+8. Um **painel** desenhado com o OpenCV fica ao lado do vídeo, e o
    `cv2.setMouseCallback` detecta os cliques nas abas e nas bolinhas de cor.
 
 ## Como instalar

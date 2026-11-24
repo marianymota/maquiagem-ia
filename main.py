@@ -23,15 +23,24 @@ URL_MODELO = (
 # A opacidade diz quanto a cor da boca se aproxima da cor do batom
 # (0 = nada, 1 = totalmente). O brilho e a textura continuam da boca.
 BATONS = {
-    "1": ("Nude rosado", (130, 140, 200), 0.40),
-    "2": ("Rosa-cha", (125, 110, 190), 0.45),
-    "3": ("Coral", (70, 95, 240), 0.45),
-    "4": ("Vermelho classico", (30, 20, 200), 0.50),
+    "1": ("Nude rosado", (130, 140, 200), 0.32),
+    "2": ("Rosa-cha", (125, 110, 190), 0.36),
+    "3": ("Coral", (70, 95, 240), 0.36),
+    "4": ("Vermelho classico", (30, 20, 200), 0.42),
     "5": ("Cereja escuro", (40, 10, 130), 0.50),
     "6": ("Vinho/berry", (70, 25, 105), 0.50),
     "7": ("Marrom-chocolate", (35, 50, 95), 0.50),
-    "8": ("Malva", (140, 95, 165), 0.45),
+    "8": ("Malva", (140, 95, 165), 0.36),
 }
+
+# Batons que usam o efeito ORIGINAL (cor por igual, sem degradê nem gloss).
+# Eles já estão do jeito certo, então não mudam.
+BATONS_ORIGINAIS = {"5", "6", "7"}
+
+# Efeito natural (usado pelos outros batons):
+SATURACAO_BATOM = 0.8  # 1 = cor original; menor = cor mais "apagada"
+DEGRADE_BATOM = 10     # quanto as bordas escurecem e o centro clareia
+GLOSS_BATOM = 0.30     # força do brilho (gloss) no centro dos lábios
 
 # Blushes: tecla -> (nome, cor BGR, opacidade)
 BLUSHES = {
@@ -46,8 +55,9 @@ BLUSHES = {
 # Quanto a maquiagem pode escurecer/clarear a pele (0 = só muda a cor,
 # 1 = brilho igual ao da cor). Todos os pixels mudam igual, então a
 # textura continua. Ajuda tons escuros (vinho, chocolate) a aparecerem.
-BRILHO_BATOM = 0.8
-BRILHO_BLUSH = 0.15
+BRILHO_BATOM = 0.8     # usado só pelos batons 5, 6 e 7
+BRILHO_BLUSH = 0.10
+ILUMINADOR = 0.10      # força do brilho no topo da maçã do rosto
 # ====================================================================
 
 # O Face Mesh encontra 478 pontos no rosto. Estes são os números (índices)
@@ -59,12 +69,17 @@ LABIOS_INTERNO = [78, 95, 88, 178, 87, 14, 317, 402, 318, 324,
                   308, 415, 310, 311, 312, 13, 82, 81, 80, 191]
 
 # Pontos usados para o blush, um grupo para cada lado do rosto:
-# - "maca": pontos cuja média é o centro do blush (no alto da maçã do rosto)
-# - "tempora": ponto para onde o blush se alonga, como na maquiagem real
+# - "inicio": pontos cuja média é onde o blush começa (maçã, embaixo do olho)
+# - "tempora": ponto para onde o blush sobe e se alonga (como na maquiagem real)
+# - "luz": pontos do topo da maçã do rosto, onde vai o iluminador
 BLUSH_LADOS = [
-    {"maca": [50, 116], "tempora": 162},
-    {"maca": [280, 345], "tempora": 389},
+    {"inicio": [50, 123], "tempora": 139, "luz": [116, 117]},
+    {"inicio": [280, 352], "tempora": 368, "luz": [345, 346]},
 ]
+
+# Camadas do blush: (tamanho, peso). Cada camada é um oval desfocado;
+# somadas, ficam fortes no centro e somem devagar nas pontas.
+CAMADAS_BLUSH = [(1.0, 0.35), (0.7, 0.35), (0.4, 0.30)]
 LATERAL_ESQUERDA = 234  # bordas do rosto, para medir a largura
 LATERAL_DIREITA = 454
 
@@ -176,36 +191,180 @@ def passar_batom(frame, pontos, cor, opacidade):
     return aplicar_cor(frame, peso, cor, brilho=BRILHO_BATOM)
 
 
+def impar(valor):
+    """Arredonda para um número ímpar (o GaussianBlur exige tamanho ímpar)."""
+    return max(1, int(valor) // 2 * 2 + 1)
+
+
+def clarear(L, mascara, forca):
+    """Clareia o brilho (canal L) onde a máscara é forte, como um reflexo de luz.
+
+    Usa (255 - L): partes escuras clareiam mais que as já claras, então
+    as linhas e a textura continuam aparecendo por baixo do brilho.
+    """
+    return L + (255 - L) * mascara * forca
+
+
+def oval_desfocado(formato, centro, eixos, angulo, desfoque, reducao=1):
+    """Desenha um oval branco numa imagem preta e desfoca. Devolve 0 a 1.
+
+    reducao: faz o desenho numa imagem N vezes menor e depois amplia.
+    Como o oval é bem borrado, o resultado fica igual e MUITO mais rápido
+    (desfocar uma imagem grande com um desfoque enorme é lento).
+    """
+    altura, largura = formato
+    pequena = (altura // reducao, largura // reducao)
+    img = np.zeros(pequena, dtype=np.uint8)
+    cv2.ellipse(img, (int(centro[0] / reducao), int(centro[1] / reducao)),
+                (max(1, int(eixos[0] / reducao)), max(1, int(eixos[1] / reducao))),
+                angulo, 0, 360, 255, -1)
+    k = impar(desfoque / reducao)
+    img = cv2.GaussianBlur(img, (k, k), 0)
+    if reducao > 1:
+        img = cv2.resize(img, (largura, altura), interpolation=cv2.INTER_LINEAR)
+    return img.astype(np.float32) / 255.0
+
+
+def no_recorte(frame, pontos, indices, margem, funcao, *args):
+    """Roda a função só num pedaço da imagem em volta de alguns pontos.
+
+    Processar a imagem inteira é lento; a maquiagem só ocupa uma parte
+    do rosto, então recortamos essa parte, aplicamos e colamos de volta.
+    """
+    altura, largura = frame.shape[:2]
+    x, y, w, h = cv2.boundingRect(pontos[indices].astype(np.int32))
+    margem = int(margem)
+    x0, y0 = max(0, x - margem), max(0, y - margem)
+    x1, y1 = min(largura, x + w + margem), min(altura, y + h + margem)
+    if x1 <= x0 or y1 <= y0:
+        return frame  # rosto fora da imagem
+
+    resultado = frame.copy()
+    recorte = np.ascontiguousarray(frame[y0:y1, x0:x1])
+    # Os pontos passam a contar a partir do canto do recorte
+    resultado[y0:y1, x0:x1] = funcao(recorte, pontos - np.float32([x0, y0]), *args)
+    return resultado
+
+
+def passar_batom_natural(frame, pontos, cor, opacidade):
+    """Batom natural, calculado só na região da boca (mais rápido)."""
+    largura_boca = np.linalg.norm(pontos[61] - pontos[291])
+    return no_recorte(frame, pontos, LABIOS_EXTERNO, largura_boca * 0.3,
+                      pintar_batom_natural, cor, opacidade)
+
+
+def pintar_batom_natural(frame, pontos, cor, opacidade):
+    """Batom com cara de real: cor misturada, degradê e um gloss sutil."""
+    externo = pontos[LABIOS_EXTERNO].astype(np.int32)
+    interno = pontos[LABIOS_INTERNO].astype(np.int32)
+    largura_boca = np.linalg.norm(pontos[61] - pontos[291])
+
+    # 1) Máscara dos lábios (sem o buraco da boca), com a borda suave
+    labios = np.zeros(frame.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(labios, [externo], 255)
+    cv2.fillPoly(labios, [interno], 0)
+    k = impar(largura_boca * 0.06)
+    mascara = cv2.GaussianBlur(labios, (k, k), 0).astype(np.float32) / 255.0
+
+    # 2) "Profundidade": 0 na borda dos lábios e 1 no meio deles.
+    #    distanceTransform mede a distância de cada pixel até a borda.
+    distancia = cv2.distanceTransform(labios, cv2.DIST_L2, 5)
+    profundidade = np.clip(distancia / (largura_boca * 0.07), 0, 1)
+    profundidade = cv2.GaussianBlur(profundidade, (k, k), 0)
+
+    # 3) Passa para o LAB: L = brilho, A e B = cor
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L, A, B = cv2.split(lab)
+    cor_lab = cv2.cvtColor(np.uint8([[cor]]), cv2.COLOR_BGR2LAB)[0, 0].astype(np.float32)
+
+    # 4) Cor do batom um pouco menos saturada (128 = sem cor no LAB)
+    alvo_a = 128 + (cor_lab[1] - 128) * SATURACAO_BATOM
+    alvo_b = 128 + (cor_lab[2] - 128) * SATURACAO_BATOM
+
+    # 5) Mistura só a cor (A e B); o brilho L original fica, com a textura
+    peso = mascara * opacidade
+    A = A * (1 - peso) + alvo_a * peso
+    B = B * (1 - peso) + alvo_b * peso
+
+    # 6) Degradê: bordas levemente mais escuras, centro levemente mais claro
+    ajuste = (profundidade - 0.5) * 2 * DEGRADE_BATOM  # vai de -DEGRADE a +DEGRADE
+    L = L + ajuste * mascara
+
+    # 7) Gloss: dois ovais de luz bem desfocados, só dentro dos lábios
+    angulo = np.degrees(np.arctan2(*(pontos[291] - pontos[61])[::-1]))
+    centro_inferior = pontos[14] + (pontos[17] - pontos[14]) * 0.45  # meio do lábio de baixo
+    centro_superior = pontos[0] + (pontos[13] - pontos[0]) * 0.55    # meio do lábio de cima
+    desfoque = largura_boca * 0.10
+    gloss = (oval_desfocado(L.shape, centro_inferior, (largura_boca * 0.13, largura_boca * 0.035),
+                            angulo, desfoque)
+             + 0.5 * oval_desfocado(L.shape, centro_superior, (largura_boca * 0.08, largura_boca * 0.02),
+                                    angulo, desfoque))
+    L = clarear(L, gloss * mascara, GLOSS_BATOM)
+
+    lab = np.clip(cv2.merge([L, A, B]), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def aplicar_batom(frame, pontos, tecla):
+    """Escolhe o efeito certo: original (5, 6, 7) ou natural (os outros)."""
+    _, cor, opacidade = BATONS[tecla]
+    if tecla in BATONS_ORIGINAIS:
+        return passar_batom(frame, pontos, cor, opacidade)
+    return passar_batom_natural(frame, pontos, cor, opacidade)
+
+
 def passar_blush(frame, pontos, cor, opacidade):
-    """Aplica blush no alto das maçãs do rosto, alongado até as têmporas."""
+    """Blush, calculado só na região das bochechas (mais rápido)."""
+    largura_rosto = np.linalg.norm(pontos[LATERAL_DIREITA] - pontos[LATERAL_ESQUERDA])
+    # Todos os pontos que o blush usa (para saber onde recortar)
+    indices = [LATERAL_ESQUERDA, LATERAL_DIREITA]
+    for lado in BLUSH_LADOS:
+        indices += lado["inicio"] + lado["luz"] + [lado["tempora"]]
+    return no_recorte(frame, pontos, indices, largura_rosto * 0.45,
+                      pintar_blush, cor, opacidade)
+
+
+def pintar_blush(frame, pontos, cor, opacidade):
+    """Blush grande e difuso na maçã do rosto, subindo até a têmpora."""
     # Tamanho do rosto: distância entre as laterais. Assim o blush
     # fica do tamanho certo, perto ou longe da câmera.
     largura_rosto = np.linalg.norm(pontos[LATERAL_DIREITA] - pontos[LATERAL_ESQUERDA])
+    formato = frame.shape[:2]
 
-    # Tamanho do oval: comprido (na direção da têmpora) e estreito
-    eixos = (int(largura_rosto * 0.15), int(largura_rosto * 0.065))
-
-    # 1) Desenha um oval branco em cada lado do rosto, numa máscara preta
-    mascara = np.zeros(frame.shape[:2], dtype=np.uint8)
+    # Para cada lado: começa embaixo do olho e vai na diagonal até a têmpora.
+    # Como tudo vem de pontos do rosto, o blush se move e gira com a cabeça.
+    lados = []
     for lado in BLUSH_LADOS:
-        # Centro: média dos pontos do alto da maçã do rosto
-        centro = pontos[lado["maca"]].mean(axis=0)
-        # Direção: da maçã do rosto até a têmpora (a diagonal do blush).
-        # Como usa pontos do rosto, o oval gira junto com a cabeça.
-        dx, dy = pontos[lado["tempora"]] - centro
-        angulo = np.degrees(np.arctan2(dy, dx))
-        # Puxa o centro um pouco em direção à têmpora
-        centro = centro + np.array([dx, dy]) * 0.08
-        cv2.ellipse(mascara, (int(centro[0]), int(centro[1])), eixos,
-                    angulo, 0, 360, 255, -1)
+        inicio = pontos[lado["inicio"]].mean(axis=0)
+        direcao = pontos[lado["tempora"]] - inicio
+        angulo = np.degrees(np.arctan2(direcao[1], direcao[0]))
+        centro = inicio + direcao * 0.30
+        luz = pontos[lado["luz"]].mean(axis=0)
+        lados.append((centro, angulo, luz))
 
-    # 2) Desfoque bem grande, para o blush "sumir" na pele sem borda
-    k = int(largura_rosto * 0.25) // 2 * 2 + 1
-    mascara = cv2.GaussianBlur(mascara, (k, k), 0)
+    # 1) Várias camadas de ovais desfocados, somadas (pigmento acumulado):
+    #    forte no centro e sumindo aos poucos, sem nenhuma borda.
+    mascara = np.zeros(formato, dtype=np.float32)
+    for tamanho, peso_camada in CAMADAS_BLUSH:
+        eixos = (largura_rosto * 0.22 * tamanho, largura_rosto * 0.09 * tamanho)
+        desfoque = largura_rosto * 0.30 * tamanho
+        for centro, angulo, _ in lados:
+            mascara += oval_desfocado(formato, centro, eixos, angulo, desfoque,
+                                      reducao=4) * peso_camada
 
-    # 3) Pesos de 0 a 1 e mistura da cor, mexendo pouco no brilho da pele
-    peso = mascara.astype(np.float32) / 255.0 * opacidade
-    return aplicar_cor(frame, peso, cor, brilho=BRILHO_BLUSH)
+    # 2) Mistura a cor no LAB (mexendo pouco no brilho, a pele continua)
+    peso = np.clip(mascara, 0, 1) * opacidade
+    frame = aplicar_cor(frame, peso, cor, brilho=BRILHO_BLUSH)
+
+    # 3) Iluminador: um brilho bem leve no topo da maçã do rosto
+    luz = np.zeros(formato, dtype=np.float32)
+    for _, angulo, ponto_luz in lados:
+        luz += oval_desfocado(formato, ponto_luz, (largura_rosto * 0.09, largura_rosto * 0.035),
+                              angulo, largura_rosto * 0.12, reducao=4)
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab[:, :, 0] = clarear(lab[:, :, 0], luz, ILUMINADOR)
+    lab = np.clip(lab, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
 # ------------------------------ PAINEL -----------------------------
@@ -391,8 +550,7 @@ def main():
                 _, cor, opacidade = BLUSHES[estado["blush"]]
                 frame = passar_blush(frame, pontos, cor, opacidade)
             if estado["batom"]:
-                _, cor, opacidade = BATONS[estado["batom"]]
-                frame = passar_batom(frame, pontos, cor, opacidade)
+                frame = aplicar_batom(frame, pontos, estado["batom"])
 
         # Junta o vídeo com o painel ao lado e mostra
         painel = desenhar_painel(frame.shape[0], estado)
