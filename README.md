@@ -1,12 +1,11 @@
 # Try-on Virtual de Maquiagem 💄
 
 Experimente batom, blush, sombra, delineado e cílios virtualmente usando a
-webcam! O programa
-detecta seu rosto em tempo real com o **MediaPipe Face Mesh**, encontra os
-lábios, as maçãs do rosto e as pálpebras e aplica a maquiagem de forma
-realista, acompanhando os movimentos da cabeça. Dá para combinar livremente
-batom, blush e sombra, escolhendo as cores com o mouse num painel ao lado
-do vídeo.
+webcam! O programa detecta seu rosto em tempo real com o **MediaPipe Face
+Mesh**, encontra os lábios, as maçãs do rosto e as pálpebras e aplica a
+maquiagem de forma realista, acompanhando os movimentos da cabeça. Dá para
+combinar livremente todas as maquiagens, escolhendo as opções com o mouse
+num painel ao lado do vídeo.
 
 Projeto de estudo feito em Python com OpenCV, MediaPipe e NumPy.
 
